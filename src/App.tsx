@@ -6,7 +6,7 @@ type Difficulty = 'easy' | 'normal' | 'hard';
 type Gender = 'male' | 'female' | 'custom';
 type ApiType = 'claude' | 'gemini' | 'deepseek';
 
-interface Player { name: string; gender: Gender; }
+interface Player { name: string; gender: Gender; customGender?: string; }
 interface Teammate { id: string; name: string; personality: string; specialty: string; appearance: string; }
 interface Item { id: string; name: string; description: string; }
 interface Message { role: 'user' | 'assistant'; content: string; timestamp: number; isStory?: boolean; }
@@ -92,7 +92,7 @@ export const deleteSave = (): void => {
 };
 
 // 首页组件
-function HomePage({ onStart, onContinue }: { onStart: () => void; onContinue: (state: GameState) => void }) {
+function HomePage({ onStart, onContinue, onApiSettingsChange }: { onStart: () => void; onContinue: (state: GameState) => void; onApiSettingsChange?: (key: string, type: string) => void }) {
   const [showSettings, setShowSettings] = useState(false);
   const [apiKey, setApiKeyLocal] = useState(localStorage.getItem('apiKey') || '');
   const [apiType, setApiTypeLocal] = useState(localStorage.getItem('apiType') || 'deepseek');
@@ -113,6 +113,10 @@ function HomePage({ onStart, onContinue }: { onStart: () => void; onContinue: (s
   const saveApiSettings = () => {
     localStorage.setItem('apiKey', apiKey);
     localStorage.setItem('apiType', apiType);
+    // 通知父组件 API 设置已更改
+    if (onApiSettingsChange) {
+      onApiSettingsChange(apiKey, apiType);
+    }
     setShowSettings(false);
   };
 
@@ -167,6 +171,7 @@ function HomePage({ onStart, onContinue }: { onStart: () => void; onContinue: (s
 function CharacterCreate({ onComplete, onBack }: { onComplete: (state: GameState) => void; onBack: () => void }) {
   const [playerName, setPlayerName] = useState('');
   const [gender, setGender] = useState<Gender>('female');
+  const [customGender, setCustomGender] = useState('');
   const [teammates, setTeammates] = useState(PRESET_CHARACTERS.map(c => ({ ...c })));
   const [difficulty, setDifficulty] = useState<Difficulty>('normal');
   const [selectedDungeon, setSelectedDungeon] = useState<string | null>(null);
@@ -182,7 +187,7 @@ function CharacterCreate({ onComplete, onBack }: { onComplete: (state: GameState
     teammates.forEach(t => { trust[t.id] = 50; });
 
     onComplete({
-      player: { name: displayName, gender },
+      player: { name: displayName, gender, customGender },
       teammates,
       relationships: {},
       trust,
@@ -218,6 +223,15 @@ function CharacterCreate({ onComplete, onBack }: { onComplete: (state: GameState
                   </button>
                 ))}
               </div>
+              {gender === 'custom' && (
+                <input
+                  type="text"
+                  value={customGender}
+                  onChange={e => setCustomGender(e.target.value)}
+                  placeholder="输入你的性别（如：无性别、跨性别等）..."
+                  className="w-full mt-2 bg-[#0a0a15] border border-red-900/30 rounded px-3 py-2 text-white placeholder-gray-600"
+                />
+              )}
             </div>
           </div>
         </div>
@@ -304,6 +318,16 @@ export interface DungeonSummary {
   keyEvents: string[];  // 关键事件列表（如"发现尸体"、"队友牺牲"等）
   itemsGained: string[]; // 获得道具
   teammatesInvolved: string[]; // 涉及的队友名
+  storyReveal?: string;  // 本副本揭示的主线真相片段
+  foreshadowing?: string; // 埋下的伏笔（下一副本线索）
+}
+
+// 全局故事背景（游戏开始时由AI生成）
+export interface StoryBackground {
+  worldSetting: string;   // 世界观设定
+  mainPlot: string;       // 主线故事
+  hiddenTruth: string;    // 隐藏真相（游戏结束时揭示）
+  antagonist: string;     // 幕后黑手
 }
 
 function parseAIResponse(content: string): {
@@ -312,14 +336,29 @@ function parseAIResponse(content: string): {
   trustDeltas: Record<string, number>;
   isClear: boolean;           // 是否通关
   dungeonSummary: DungeonSummary | null; // 副本摘要
+  storyBackground: StoryBackground | null; // 故事背景（首副本生成）
 } {
   let cleanContent = content;
   let danmaku: Danmaku[] = [];
   const trustDeltas: Record<string, number> = {};
   let isClear = false;
   let dungeonSummary: DungeonSummary | null = null;
+  let storyBackground: StoryBackground | null = null;
 
-  // 解析通关标记：【通关】副本名|结果|关键事件1|关键事件2|道具|涉及队友
+  // 解析故事背景：【故事背景】世界观|主线|隐藏真相|幕后黑手
+  const bgMatch = cleanContent.match(/【故事背景】([^【\n]+(?:\n(?!【)[^\n]*)*)/);
+  if (bgMatch) {
+    const parts = bgMatch[1].split('|').map(p => p.trim()).filter(Boolean);
+    storyBackground = {
+      worldSetting: parts[0] || '',
+      mainPlot: parts[1] || '',
+      hiddenTruth: parts[2] || '',
+      antagonist: parts[3] || '',
+    };
+    cleanContent = cleanContent.replace(/【故事背景】[^\n]+\n?/, '').trim();
+  }
+
+  // 解析通关标记：【通关】副本名|结果|关键事件1&关键事件2|道具|涉及队友|主线揭示|伏笔
   const clearMatch = cleanContent.match(/【通关】([^【\n]+)/);
   if (clearMatch) {
     isClear = true;
@@ -330,6 +369,8 @@ function parseAIResponse(content: string): {
       keyEvents: (parts[2] || '').split('&').map(s => s.trim()).filter(Boolean),
       itemsGained: (parts[3] || '').split('&').map(s => s.trim()).filter(Boolean),
       teammatesInvolved: (parts[4] || '').split('&').map(s => s.trim()).filter(Boolean),
+      storyReveal: parts[5] || '',
+      foreshadowing: parts[6] || '',
     };
     cleanContent = cleanContent.replace(/【通关】[^\n]+\n?/, '').trim();
   }
@@ -367,17 +408,18 @@ function parseAIResponse(content: string): {
     if (danmaku.length === 0) danmaku.push({ text: '这剧情有点东西', type: 'normal' as const });
   }
 
-  return { cleanContent, danmaku, trustDeltas, isClear, dungeonSummary };
+  return { cleanContent, danmaku, trustDeltas, isClear, dungeonSummary, storyBackground };
 }
 
 // 游戏页
-function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }: {
+function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave, onApiKeyChange }: {
   gameState: GameState;
   apiKey: string;
   apiType: ApiType;
   onExit: () => void;
   onOpenSettings: () => void;
   onSave: (gameState: GameState, messages: Message[]) => void;
+  onApiKeyChange: (key: string) => void;
 }) {
   const [messages, setMessages] = useState<Message[]>(gameState.messages || []);
   const [danmaku, setDanmaku] = useState<Danmaku[]>([]);
@@ -391,6 +433,10 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
   const [trustChanges, setTrustChanges] = useState<Record<string, number>>({});
   const [clearedDungeons, setClearedDungeons] = useState<DungeonSummary[]>([]); // 已通关副本列表
   const [isTransitioning, setIsTransitioning] = useState(false); // 通关过渡动画中
+  const [showDungeonSelect, setShowDungeonSelect] = useState(false); // 通关后选择下一副本
+  const [pendingSummary, setPendingSummary] = useState<DungeonSummary | null>(null); // 待处理的通关摘要
+  const [storyBackground, setStoryBackground] = useState<StoryBackground | null>(null); // 全局故事背景
+  const [showStoryReveal, setShowStoryReveal] = useState(false); // 显示完整故事揭示弹窗
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const isLoadedFromSave = useRef(gameState.messages && gameState.messages.length > 0);
@@ -408,45 +454,113 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
   }, [messages]);
 
   useEffect(() => {
-    if (!apiKey) { setShowApiModal(true); return; }
+    if (!apiKey) { 
+      setShowApiModal(true); 
+      return; 
+    }
     // 如果是从存档加载的，不重新生成剧情
     if (isLoadedFromSave.current && gameState.messages && gameState.messages.length > 0) {
       return;
     }
-    // 自动生成第一段剧情
+    // 自动生成第一段剧情（流式输出）
     const initGame = async () => {
       setIsLoading(true);
+      // 先设置空消息，用于流式更新
+      const aiMsg: Message = { role: 'assistant', content: '', timestamp: Date.now() };
+      setMessages([aiMsg]);
+      
       try {
-        let content = '';
         if (apiType === 'deepseek') {
-          const prompt = buildPrompt(null);
+          const prompt = buildPrompt(null, true);  // 首副本，生成故事背景
           try {
             const res = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-              body: JSON.stringify({ model: 'deepseek-ai/DeepSeek-V4-Flash', messages: [{ role: 'system', content: prompt }, { role: 'user', content: '请开始游戏，生成第一段剧情和四个选项。' }], max_tokens: 2000, temperature: 0.8 }),
+              body: JSON.stringify({ 
+                model: 'deepseek-ai/DeepSeek-V4-Flash', 
+                messages: [{ role: 'system', content: prompt }, { role: 'user', content: '请开始游戏，生成第一段剧情和四个选项。' }], 
+                max_tokens: 1500, 
+                temperature: 0.7,
+                stream: true  // 启用流式输出
+              }),
             });
             if (!res.ok) {
               const errText = await res.text().catch(() => '');
+              if (res.status === 401) {
+                throw new Error('API Key 无效，请重新设置。点击右上角 ⚙️ 按钮输入正确的 API Key。');
+              }
               throw new Error('API错误: ' + res.status + ' ' + errText.substring(0, 200));
             }
-            const data = await res.json();
-            content = data.choices?.[0]?.message?.content || '';
-            if (!content) throw new Error('AI返回内容为空，请检查API Key是否有效');
+            // 流式读取响应
+            const reader = res.body?.getReader();
+            if (!reader) throw new Error('无法读取响应流');
+            
+            const decoder = new TextDecoder();
+            let fullContent = '';
+            let lastUpdate = Date.now();
+            
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              
+              const chunk = decoder.decode(value, { stream: true });
+              // 解析 SSE 格式数据
+              const lines = chunk.split('\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  const data = line.slice(6);
+                  if (data === '[DONE]') continue;
+                  try {
+                    const parsed = JSON.parse(data);
+                    const delta = parsed.choices?.[0]?.delta?.content || '';
+                    if (delta) {
+                      fullContent += delta;
+                      lastUpdate = Date.now();
+                      // 实时更新消息内容
+                      setMessages([{ ...aiMsg, content: fullContent }]);
+                    }
+                  } catch (e) {
+                    // 忽略解析错误
+                  }
+                }
+              }
+            }
+            
+            // 如果流式读取失败（内容为空），尝试非流式读取
+            if (!fullContent || fullContent.length < 10) {
+              console.log('[DEBUG] 流式读取为空，尝试重新获取...');
+              // 重新发起非流式请求
+              const retryRes = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+                body: JSON.stringify({ 
+                  model: 'deepseek-ai/DeepSeek-V4-Flash', 
+                  messages: [{ role: 'system', content: prompt }, { role: 'user', content: '请开始游戏，生成第一段剧情和四个选项。' }], 
+                  max_tokens: 1500, 
+                  temperature: 0.7
+                }),
+              });
+              const retryData = await retryRes.json();
+              fullContent = retryData.choices?.[0]?.message?.content || '';
+            }
+            
+            if (!fullContent) throw new Error('AI返回内容为空，请检查API Key是否有效');
+            
+            // 解析弹幕和信任度
+            const { cleanContent, danmaku: newDanmaku, trustDeltas, storyBackground: bg } = parseAIResponse(fullContent);
+            setMessages([{ ...aiMsg, content: cleanContent }]);
+            setDanmaku(newDanmaku);
+            if (bg) setStoryBackground(bg);
+            
           } catch (fetchErr: any) {
             throw fetchErr;
           }
         }
-        const { cleanContent, danmaku: newDanmaku, trustDeltas } = parseAIResponse(content);
-        const aiMsg: Message = { role: 'assistant', content: cleanContent, timestamp: Date.now() };
-        setMessages([aiMsg]);
-        setDanmaku(newDanmaku);
-        // 初始化信任度变化（首次填0，但依然要解析）
-        if (trustDeltas && Object.keys(trustDeltas).length > 0) {
-          console.log('[DEBUG] 初始化信任度:', trustDeltas);
-        }
       } catch (e: any) {
         setMessages([{ role: 'assistant', content: '❌ 错误: ' + e.message, timestamp: Date.now() }]);
+        if (e.message.includes('401') || e.message.includes('无效') || e.message.includes('Invalid')) {
+          setShowApiModal(true);
+        }
       } finally {
         setIsLoading(false);
       }
@@ -454,18 +568,97 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
     initGame();
   }, [apiKey, apiType, gameState.messages]);
 
-  const buildPrompt = (previousDungeon: DungeonSummary | null = null) => {
+  const buildPrompt = (previousDungeon: DungeonSummary | null = null, isFirstDungeon: boolean = false) => {
     const dungeon = gameState.currentDungeon || '未知副本';
     const tmList = gameState.teammates.map(t => '- ' + t.name + '：' + t.personality + '，' + t.specialty).join('\n');
     const diffDesc = gameState.difficulty === 'easy' ? '简单模式' : gameState.difficulty === 'normal' ? '中等模式' : '困难模式';
-    const gender = gameState.player.gender === 'female' ? '女' : '男';
-    // 信任度信息
+    const gender = gameState.player.gender === 'female' ? '女' : gameState.player.gender === 'male' ? '男' : (gameState.player.customGender || '其他');
     const trustInfo = gameState.teammates.map(t => {
       const val = localTrust[t.id] ?? 50;
       const level = val >= 80 ? '深信' : val >= 60 ? '信任' : val >= 40 ? '普通' : val >= 20 ? '警惕' : '敌意';
       return `${t.name}:${val}(${level})`;
     }).join('，');
-    return '你是恐怖无限流游戏叙事者。【格式铁律，违反格式=错误回复】\n\n【基本信息】\n游戏：无限流·高三3班\n副本：' + dungeon + '\n主角：' + gameState.player.name + '（' + gender + '生）\n\n【队友】\n' + tmList + '\n\n【难度】' + diffDesc + '\n\n【当前信任度】\n' + trustInfo + '\n（信任度影响队友行为：深信会主动保护你，信任会配合行动，普通正常协作，警惕会质疑你，敌意可能背刺！）\n\n' + (previousDungeon ? '\n【★★★上一副本记忆★★★】（新副本必须与此深度关联！）\n副本名：' + previousDungeon.name + '\n通关结果：' + previousDungeon.outcome + '\n关键事件：' + (previousDungeon.keyEvents.length > 0 ? previousDungeon.keyEvents.join('；') : '无') + '\n获得道具：' + (previousDungeon.itemsGained.length > 0 ? previousDungeon.itemsGained.join('、') : '无') + '\n★新副本开头必须直接承接上述事件！可以：延续未解之谜、揭示上一副本的深层真相、使用上一副本获得的道具、解锁同一幕后黑手的下一阶段阴谋！\n' : '') + '\n【游戏规则】\n1.异界死亡=现实猝死\n2.全员可死\n3.玩家操控主角\n4.通关可获道具\n\n【★★★必须严格遵守的回复格式★★★】\n每次回复必须按顺序包含以下四部分，缺一不可：\n\n---第一部分：剧情---\n（200-400字恐怖氛围描写' + (previousDungeon ? '，开头必须承接【上一副本记忆】中的事件，制造关联和悬念' : '，营造恐怖氛围') + '，根据信任度体现队友不同态度）\n\n---第二部分：选项---\n[A]: 选项内容\n[B]: 选项内容\n[C]: 选项内容\n[D]: 选项内容\n（必须正好4个，' + (gameState.difficulty === 'easy' ? '最多1个死亡选项' : gameState.difficulty === 'normal' ? '固定1个死亡选项' : '固定2个死亡选项') + '）\n\n---第三部分：信任度变化（必须输出！）---\n格式示例：【信任度变化】顾深:+8,夏眠:-3,姜迟:+5,陆焰:0\n规则：根据玩家刚才的选择调整（范围-20到+15），第一次填0，所有队友都要写\n★注意：必须用中文全角【】，名字后跟英文半角冒号，数字前必须有+或-号（0除外）\n\n---第四部分：通关标记（可选，只有在剧情走到副本结局时才输出！）---\n如果当前剧情已经到达副本结局（玩家成功通关），在剧情末尾输出：\n【通关】副本名|通关结果|关键事件1&关键事件2|获得道具1&道具2|涉及队友1&队友2\n（通关后系统会自动进入下一副本，此标记只在真正通关时输出）\n\n---第五部分：弹幕---\n【弹幕】\nnormal: 弹幕内容\nwarning: 预警弹幕\ncp: 磕CP弹幕\nfunny: 搞笑弹幕\n（共5-8条，根据剧情内容生成，类型选normal/warning/cp/funny）';
+
+    const firstDungeonInstruction = isFirstDungeon ? `
+【★ 首副本专属要求 ★】
+这是游戏的第一个副本，你必须在回复末尾（所有其他内容之后）输出以下格式的故事背景（ONE LINE，用|分隔）：
+【故事背景】世界观简述（2-3句）|主线故事梗概（2-3句）|隐藏真相（玩家最终会发现的核心秘密）|幕后黑手（谁在操控这一切）
+
+要求：
+- 世界观：解释"无限流"的运作机制，为何高三3班的学生被选中
+- 主线：贯穿所有副本的核心谜题（至少跨越3个副本的宏大阴谋）
+- 隐藏真相：游戏最终揭示的震撼秘密（需要让玩家通关多个副本才能拼凑）
+- 幕后黑手：一个在背后操控一切的神秘存在（需要有动机和逻辑）
+` : '';
+
+    return `你是顶级恐怖无限流小说作家，同时担任游戏叙事者。你的文风参照今何在《悟空传》的沉郁、骨子里有宿命感，兼具网文爽点。【格式铁律，违反格式=错误回复】
+
+【基本信息】
+游戏：无限流·高三3班
+副本：${dungeon}
+主角：${gameState.player.name}（${gender}生）
+
+【队友】
+${tmList}
+
+【难度】${diffDesc}
+
+【当前信任度】
+${trustInfo}
+（信任度影响队友行为：深信会舍命保护你，信任会配合行动，普通正常协作，警惕会质疑动机，敌意可能在关键时刻背刺！）
+${previousDungeon ? `
+【★★★上一副本记忆★★★】（新副本必须与此深度关联！）
+副本名：${previousDungeon.name}
+通关结果：${previousDungeon.outcome}
+关键事件：${previousDungeon.keyEvents.length > 0 ? previousDungeon.keyEvents.join('；') : '无'}
+获得道具：${previousDungeon.itemsGained.length > 0 ? previousDungeon.itemsGained.join('、') : '无'}
+主线揭示：${previousDungeon.storyReveal || '无'}
+遗留伏笔：${previousDungeon.foreshadowing || '无'}
+★新副本开头必须承接上一副本遗留的伏笔！将幕后黑手的阴谋推进到下一阶段！` : ''}
+
+【游戏规则】
+1. 异界死亡=现实猝死
+2. 全员可死，队友死亡对故事影响持续
+3. 玩家操控主角
+4. 通关可获道具，道具在后续副本中可使用
+
+【★★★叙事要求（核心！）★★★】
+1. 【文学性】每段剧情如同小说章节，有完整的情节起承转合，要有具体细节、感官描写（气味/触感/声音）
+2. 【伏笔感】每段剧情必须埋下至少1个细节伏笔（可能在后续副本揭示意义），用★标注伏笔内容
+3. 【人物弧】队友不是工具，要体现他们的恐惧、成长、隐藏秘密——低信任度的队友可能有自己的秘密议程
+4. 【主线推进】每次剧情要暗示"幕后黑手"的存在，散落线索让玩家拼凑真相
+5. 【情感张力】生死选择要有道德困境，让玩家真正纠结
+6. 【副本主题】每个副本不只是逃生，要有内在主题（背叛/救赎/牺牲/真相/记忆）
+${firstDungeonInstruction}
+【★★★必须严格遵守的回复格式★★★】
+每次回复必须按顺序包含以下部分：
+
+---第一部分：剧情---
+（300-500字，文学性叙事，有细节有情感，体现副本主题，根据信任度体现队友差异化反应）
+（★伏笔：[在某处标注埋下的伏笔]）
+
+---第二部分：选项---
+[A]: 选项内容
+[B]: 选项内容
+[C]: 选项内容
+[D]: 选项内容
+（必须正好4个，${gameState.difficulty === 'easy' ? '最多1个死亡选项' : gameState.difficulty === 'normal' ? '固定1个死亡选项' : '固定2个死亡选项'}，选项要有道德层面的权衡，不只是"往左走/往右走"）
+
+---第三部分：信任度变化（必须输出！）---
+格式示例：【信任度变化】顾深:+8,夏眠:-3,姜迟:+5,陆焰:0
+规则：根据玩家刚才的选择调整（范围-20到+15），第一次填0，所有队友都要写
+★必须用中文全角【】，名字后跟英文半角冒号，数字前必须有+或-号（0除外）
+
+---第四部分：通关标记（只在剧情走到副本结局时输出！）---
+【通关】副本名|通关结果|关键事件1&关键事件2|获得道具1&道具2|涉及队友1&队友2|本副本揭示的主线真相（1-2句关键信息）|留给下一副本的伏笔（1句话）
+
+---第五部分：弹幕---
+【弹幕】
+normal: 弹幕内容
+warning: 预警弹幕
+cp: 磕CP弹幕
+funny: 搞笑弹幕
+（共5-8条，要精准反映当前剧情情绪，warning类要有紧迫感，cp类要有萌点）`;
   };
 
   // 通关后自动进入下一副本
@@ -501,6 +694,11 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
     setIsLoading(true);
     const userMsg: Message = { role: 'user', content: userInput, timestamp: Date.now() };
     setMessages(prev => [...prev, userMsg]);
+    
+    // 创建空消息用于流式更新
+    const aiMsg: Message = { role: 'assistant', content: '', timestamp: Date.now() };
+    setMessages(prev => [...prev, aiMsg]);
+    
     try {
       let content = '';
       if (apiType === 'deepseek') {
@@ -510,45 +708,109 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
           const res = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-            body: JSON.stringify({ model: 'deepseek-ai/DeepSeek-V4-Flash', messages: [{ role: 'system', content: prompt }, ...historyMessages, { role: 'user', content: userInput }], max_tokens: 2000, temperature: 0.8 }),
+            body: JSON.stringify({ 
+              model: 'deepseek-ai/DeepSeek-V4-Flash', 
+              messages: [{ role: 'system', content: prompt }, ...historyMessages, { role: 'user', content: userInput }], 
+              max_tokens: 1500, 
+              temperature: 0.7,
+              stream: true  // 启用流式输出
+            }),
           });
           if (!res.ok) throw new Error('API错误: ' + res.status + ' ' + (await res.text().catch(() => '')).substring(0, 200));
-          const data = await res.json();
-          content = data.choices?.[0]?.message?.content || '';
+          
+          // 流式读取响应
+          const reader = res.body?.getReader();
+          if (!reader) throw new Error('无法读取响应流');
+          
+          const decoder = new TextDecoder();
+          let fullContent = '';
+          
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+                try {
+                  const parsed = JSON.parse(data);
+                  const delta = parsed.choices?.[0]?.delta?.content || '';
+                  if (delta) {
+                    fullContent += delta;
+                    // 实时更新消息内容
+                    setMessages(prev => {
+                      const newMessages = [...prev];
+                      newMessages[newMessages.length - 1] = { ...aiMsg, content: fullContent };
+                      return newMessages;
+                    });
+                  }
+                } catch (e) {
+                  // 忽略解析错误
+                }
+              }
+            }
+          }
+          
+          // 如果流式读取失败，尝试非流式
+          if (!fullContent || fullContent.length < 10) {
+            console.log('[DEBUG] 流式读取为空，尝试重新获取...');
+            const retryRes = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+              body: JSON.stringify({ 
+                model: 'deepseek-ai/DeepSeek-V4-Flash', 
+                messages: [{ role: 'system', content: prompt }, ...historyMessages, { role: 'user', content: userInput }], 
+                max_tokens: 1500, 
+                temperature: 0.7
+              }),
+            });
+            const retryData = await retryRes.json();
+            content = retryData.choices?.[0]?.message?.content || '';
+          } else {
+            content = fullContent;
+          }
+          
           if (!content) throw new Error('AI返回内容为空');
+          
         } catch (fetchErr: any) {
           throw fetchErr;
         }
       }
-      const { cleanContent, danmaku: newDanmaku, trustDeltas, isClear, dungeonSummary } = parseAIResponse(content);
-      // DEBUG
+      
+      const { cleanContent, danmaku: newDanmaku, trustDeltas, isClear, dungeonSummary, storyBackground: bg } = parseAIResponse(content);
       console.log('[DEBUG] AI原始回复末尾:', content.slice(-200));
       console.log('[DEBUG] 是否通关:', isClear, '摘要:', dungeonSummary);
 
+      // 保存故事背景（如果有）
+      if (bg) setStoryBackground(bg);
+
       // 检查是否通关
       if (isClear && dungeonSummary) {
-        const nextDungeon = getRandomDungeon();
-        // 显示通关消息
         const clearMsg: Message = {
           role: 'assistant',
-          content: cleanContent + '\n\n✨ 【副本通关】 ✨\n' + (dungeonSummary.keyEvents.length > 0 ? '关键事件：' + dungeonSummary.keyEvents.join('；') : '') + '\n\n正在加载下一副本：' + nextDungeon + '...',
+          content: cleanContent + '\n\n✨ 【副本通关】 ✨\n' + (dungeonSummary.keyEvents.length > 0 ? '关键事件：' + dungeonSummary.keyEvents.join('；') : '') + (dungeonSummary.storyReveal ? '\n\n🔍 真相碎片：' + dungeonSummary.storyReveal : ''),
           timestamp: Date.now()
         };
-        setMessages(prev => [...prev, clearMsg]);
-        setDanmaku([{ text: '🎉 通关成功！', type: 'funny' }, { text: '下一关马上开始！', type: 'normal' }]);
-        setDanmaku(newDanmaku);
-        // 显示过渡动画
-        setIsTransitioning(true);
-        // 3秒后自动进入下一副本
-        setTimeout(() => transitionToNextDungeon(dungeonSummary, nextDungeon), 3000);
+        setMessages(prev => [...prev.slice(0, -1), clearMsg]);
+        setDanmaku([{ text: '🎉 通关成功！', type: 'funny' }, { text: '真相即将揭晓...', type: 'warning' }, { text: '选择下一个副本吧！', type: 'normal' }]);
+        // 保存通关摘要，等待用户选择下一副本
+        setPendingSummary(dungeonSummary);
+        setShowDungeonSelect(true);
         return;
       }
 
-      const aiMsg: Message = { role: 'assistant', content: cleanContent, timestamp: Date.now() };
-      setMessages(prev => [...prev, aiMsg]);
+      // 更新最终内容
+      setMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[newMessages.length - 1] = { ...aiMsg, content: cleanContent };
+        return newMessages;
+      });
       setDanmaku(newDanmaku);
 
-      // 更新信任度（如果AI没有输出信任度变化，用小随机值兜底）
+      // 更新信任度
       const finalDeltas = Object.keys(trustDeltas).length > 0
         ? trustDeltas
         : (() => {
@@ -607,28 +869,46 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
       .replace(/^第[一二三四五]部分[：:][^\n]*/gm, '')
       .replace(/^##\s+.+$/gm, '')       // 去掉 ## 标题行
       .replace(/^\s*---+\s*$/gm, '')   // 去掉孤立分隔线
+      .replace(/---第一部分：剧情---/g, '')  // 去掉第一部分标记
+      .replace(/---第二部分：选项---/g, '')  // 去掉第二部分标记
+      .replace(/---第三部分：信任度变化[^\n]*/g, '')  // 去掉第三部分标记
+      .replace(/---第四部分：通关标记[^\n]*/g, '')  // 去掉第四部分标记
+      .replace(/---第五部分：弹幕---/g, '')  // 去掉第五部分标记
       .replace(/\n{3,}/g, '\n\n')      // 压缩空行
       .trim();
 
-    // 第3步：从原始内容提取选项（支持多种格式）
-    // 先尝试匹配 "[A] 内容" 或 "A: 内容" 格式
-    const optionRegex = /(?:^|\n)\s*\[?([A-D])\]?\s*[:：\.、）\)\]\s]+\s*(.+?)(?=\n\s*\[?[A-D]\][:\.\s]|\n*$)/gi;
-    let m;
-    while ((m = optionRegex.exec(raw)) !== null) {
-      options.push({ label: m[1].toUpperCase(), text: m[2].trim() });
-    }
-    // 兜底：逐行扫描
-    if (options.length === 0) {
+    // 第3步：逐行扫描提取选项（最可靠）
+    {
       const lines = raw.split('\n');
       for (const line of lines) {
-        const mm = line.match(/^\s*\[?([A-D])\]?\s*[:：\.、）\)\]\s]+(.+)$/i);
+        // 匹配各种格式：[A]: / [A] / A: / A. / A、/ A） 等
+        const mm = line.match(/^\s*\[?([A-D])\]?\s*[:：\.、）\)]\s*(.+)$/i);
         if (mm) {
-          options.push({ label: mm[1].toUpperCase(), text: mm[2].trim() });
+          const label = mm[1].toUpperCase();
+          const text = mm[2].trim();
+          // 去重：如果已有相同 label 则跳过
+          if (text && !options.find(o => o.label === label)) {
+            options.push({ label, text });
+          }
         }
       }
     }
     // 如果选项超过4个，只保留前4个
     if (options.length > 4) options.length = 4;
+    // 如果不足4个，自动补全缺失的选项
+    const allLabels = ['A', 'B', 'C', 'D'];
+    for (const label of allLabels) {
+      if (!options.find(o => o.label === label)) {
+        console.log('[DEBUG] 补全缺失选项:', label);
+        options.push({ label, text: '继续前进' });
+      }
+    }
+    // 强制确保4个选项（兜底）
+    while (options.length < 4) {
+      const label = String.fromCharCode(65 + options.length); // A, B, C, D
+      console.log('[DEBUG] 兜底补全选项:', label);
+      options.push({ label, text: '继续前进' });
+    }
 
     console.log('[DEBUG] 纯净剧情长度:', cleanStory.length, '选项:', options.map(o => o.label));
   }
@@ -642,15 +922,20 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
             <div className="mb-4">
               <label className="block text-sm text-gray-400 mb-2">API类型</label>
               <div className="flex gap-2">
-                <button onClick={() => { localStorage.setItem('apiType', 'deepseek'); setShowApiModal(false); }} className="flex-1 py-2 rounded bg-red-600 text-white">DeepSeek</button>
-                <button onClick={() => { localStorage.setItem('apiType', 'claude'); setShowApiModal(false); }} className="flex-1 py-2 rounded bg-gray-700 text-white">Claude</button>
+                <button onClick={() => { localStorage.setItem('apiType', 'deepseek'); onApiKeyChange(apiKey); }} className={`flex-1 py-2 rounded ${apiType === 'deepseek' ? 'bg-red-600 text-white' : 'bg-gray-700 text-white'}`}>硅基流动</button>
+                <button onClick={() => { localStorage.setItem('apiType', 'claude'); onApiKeyChange(apiKey); }} className={`flex-1 py-2 rounded ${apiType === 'claude' ? 'bg-red-600 text-white' : 'bg-gray-700 text-white'}`}>Claude</button>
               </div>
             </div>
             <div className="mb-4">
               <label className="block text-sm text-gray-400 mb-2">API Key</label>
               <input type="password" id="apiKeyInput" placeholder="sk-..." className="w-full bg-[#0a0a15] border border-red-900/30 rounded px-3 py-2 text-white" />
             </div>
-            <button onClick={() => { const key = (document.getElementById('apiKeyInput') as HTMLInputElement).value; localStorage.setItem('apiKey', key); setShowApiModal(false); }} className="w-full py-2 bg-red-600 text-white rounded">保存</button>
+            <button onClick={() => { 
+              const key = (document.getElementById('apiKeyInput') as HTMLInputElement).value; 
+              localStorage.setItem('apiKey', key); 
+              onApiKeyChange(key);
+              setShowApiModal(false); 
+            }} className="w-full py-2 bg-red-600 text-white rounded">保存</button>
           </div>
         </div>
       )}
@@ -670,6 +955,81 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
           </div>
         </div>
       )}
+      {/* 通关后副本选择弹窗 */}
+      {showDungeonSelect && pendingSummary && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#1a1a2e] border border-red-500/40 rounded-xl w-full max-w-lg p-6 shadow-2xl">
+            <div className="text-center mb-4">
+              <div className="text-3xl mb-2">🏆</div>
+              <h2 className="text-xl font-bold text-red-400">副本通关！</h2>
+              <p className="text-gray-500 text-sm mt-1">已完成：{pendingSummary.name}</p>
+              {clearedDungeons.length > 0 && (
+                <p className="text-gray-600 text-xs mt-1">通关记录：{clearedDungeons.map(d => d.name).join(' → ')} → {pendingSummary.name}</p>
+              )}
+            </div>
+            {/* 主线真相碎片展示 */}
+            {pendingSummary.storyReveal && (
+              <div className="mb-4 p-3 bg-red-900/20 border border-red-500/20 rounded-lg">
+                <p className="text-xs text-red-400 font-bold mb-1">🔍 真相碎片</p>
+                <p className="text-sm text-gray-300 leading-relaxed">{pendingSummary.storyReveal}</p>
+                {pendingSummary.foreshadowing && (
+                  <p className="text-xs text-yellow-500/70 mt-2">⚠ 预感：{pendingSummary.foreshadowing}</p>
+                )}
+              </div>
+            )}
+            {/* 查看完整故事按钮（通关2+个副本后显示） */}
+            {(clearedDungeons.length >= 1 || storyBackground) && (
+              <button
+                onClick={() => setShowStoryReveal(true)}
+                className="w-full mb-3 p-3 bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/30 rounded-lg text-purple-300 hover:text-white transition text-sm font-bold flex items-center justify-center gap-2"
+              >
+                <span>📖</span>
+                <span>查看完整故事背景与主线</span>
+              </button>
+            )}
+            <p className="text-gray-300 text-sm mb-3 text-center">选择下一个副本</p>
+            <div className="max-h-[250px] overflow-y-auto space-y-1 options-scroll mb-4">
+              {/* 随机选项 */}
+              <button
+                onClick={() => {
+                  const next = getRandomDungeon();
+                  setShowDungeonSelect(false);
+                  setIsTransitioning(true);
+                  setTimeout(() => transitionToNextDungeon(pendingSummary, next), 1500);
+                  setPendingSummary(null);
+                }}
+                className="w-full p-3 text-left bg-red-900/20 hover:bg-red-900/40 border border-red-500/30 rounded-lg text-red-300 hover:text-white transition flex items-center gap-2"
+              >
+                <span>🎲</span>
+                <span className="font-bold">随机副本</span>
+              </button>
+              {/* 全部副本列表 */}
+              {DUNGEONS.map((dungeon, i) => {
+                const isCleared = clearedDungeons.some(d => d.name === dungeon) || pendingSummary.name === dungeon;
+                return (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setShowDungeonSelect(false);
+                      setIsTransitioning(true);
+                      setTimeout(() => transitionToNextDungeon(pendingSummary, dungeon), 1500);
+                      setPendingSummary(null);
+                    }}
+                    className={`w-full p-3 text-left rounded-lg transition flex items-center justify-between ${
+                      isCleared
+                        ? 'bg-gray-800/30 text-gray-600 hover:bg-gray-800/50'
+                        : 'bg-[#0a0a15] hover:bg-red-900/20 text-gray-300 hover:text-white'
+                    }`}
+                  >
+                    <span>{dungeon}</span>
+                    {isCleared && <span className="text-xs text-gray-600">已通关</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="h-14 bg-[#1a1a2e] border-b border-red-900/30 flex items-center justify-between px-4">
         <button onClick={onExit} className="text-gray-400 hover:text-white">← 退出</button>
         <h1 className="text-red-500 font-bold">无限流·高三3班</h1>
@@ -677,11 +1037,120 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
           {clearedDungeons.length > 0 && (
             <span className="text-yellow-400 text-sm">🏆 ×{clearedDungeons.length}</span>
           )}
+          {storyBackground && (
+            <button
+              onClick={() => setShowStoryReveal(true)}
+              className="px-3 py-1 bg-purple-800/40 hover:bg-purple-700/50 text-purple-300 hover:text-white text-sm rounded transition"
+              title="查看完整故事背景"
+            >
+              📖 故事
+            </button>
+          )}
           {saveNotice && <span className="text-green-400 text-sm animate-pulse">✓ 已存档</span>}
           <button onClick={handleSave} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded">💾 存档</button>
           <button onClick={() => setShowApiModal(true)} className="w-8 h-8 bg-red-600 rounded-full text-white text-sm">⚙</button>
         </div>
       </div>
+      {/* 完整故事背景与主线揭示弹窗 */}
+      {showStoryReveal && (
+        <div className="fixed inset-0 bg-black/95 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-[#0d0d1a] border border-purple-500/30 rounded-xl w-full max-w-2xl p-6 shadow-2xl my-4">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold text-purple-400">📖 完整故事背景</h2>
+              <button onClick={() => setShowStoryReveal(false)} className="text-gray-500 hover:text-white text-xl">✕</button>
+            </div>
+
+            {/* 世界观设定 */}
+            {storyBackground && (
+              <>
+                <div className="mb-5">
+                  <h3 className="text-sm font-bold text-purple-300 mb-2 flex items-center gap-2">
+                    <span>🌐</span> 世界观设定
+                  </h3>
+                  <p className="text-gray-300 text-sm leading-relaxed bg-purple-900/10 rounded-lg p-3 border border-purple-900/30">
+                    {storyBackground.worldSetting}
+                  </p>
+                </div>
+                <div className="mb-5">
+                  <h3 className="text-sm font-bold text-blue-300 mb-2 flex items-center gap-2">
+                    <span>📜</span> 主线故事
+                  </h3>
+                  <p className="text-gray-300 text-sm leading-relaxed bg-blue-900/10 rounded-lg p-3 border border-blue-900/30">
+                    {storyBackground.mainPlot}
+                  </p>
+                </div>
+                <div className="mb-5">
+                  <h3 className="text-sm font-bold text-yellow-300 mb-2 flex items-center gap-2">
+                    <span>😈</span> 幕后黑手
+                  </h3>
+                  <p className="text-gray-300 text-sm leading-relaxed bg-yellow-900/10 rounded-lg p-3 border border-yellow-900/30">
+                    {storyBackground.antagonist}
+                  </p>
+                </div>
+                {/* 隐藏真相只有通关3个以上副本才显示 */}
+                {clearedDungeons.length >= 2 ? (
+                  <div className="mb-5">
+                    <h3 className="text-sm font-bold text-red-400 mb-2 flex items-center gap-2">
+                      <span>🔓</span> 隐藏真相（已解锁）
+                    </h3>
+                    <p className="text-red-300 text-sm leading-relaxed bg-red-900/15 rounded-lg p-3 border border-red-500/30">
+                      {storyBackground.hiddenTruth}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mb-5">
+                    <h3 className="text-sm font-bold text-gray-600 mb-2 flex items-center gap-2">
+                      <span>🔒</span> 隐藏真相（需通关更多副本解锁）
+                    </h3>
+                    <p className="text-gray-600 text-sm italic bg-gray-900/30 rounded-lg p-3 border border-gray-800">
+                      ████████████████████████████████（通关3个以上副本后解锁）
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* 主线进度：各副本揭示的真相碎片 */}
+            {clearedDungeons.length > 0 && (
+              <div className="mb-4">
+                <h3 className="text-sm font-bold text-orange-300 mb-3 flex items-center gap-2">
+                  <span>🗺️</span> 主线进度（{clearedDungeons.length}个副本已通关）
+                </h3>
+                <div className="space-y-3">
+                  {clearedDungeons.map((d, idx) => (
+                    <div key={idx} className="bg-[#1a1a2e] rounded-lg p-3 border border-orange-900/20">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-orange-400 text-xs font-bold">第{idx + 1}章 · {d.name}</span>
+                        <span className="text-gray-600 text-xs">{d.outcome}</span>
+                      </div>
+                      {d.keyEvents.length > 0 && (
+                        <p className="text-gray-400 text-xs mb-1">事件：{d.keyEvents.join('；')}</p>
+                      )}
+                      {d.storyReveal && (
+                        <p className="text-yellow-300/80 text-xs leading-relaxed">
+                          🔍 {d.storyReveal}
+                        </p>
+                      )}
+                      {d.foreshadowing && (
+                        <p className="text-red-400/60 text-xs mt-1">
+                          ⚠ 伏笔：{d.foreshadowing}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setShowStoryReveal(false)}
+              className="w-full py-3 bg-purple-700/40 hover:bg-purple-700/60 text-purple-300 hover:text-white rounded-lg transition font-bold"
+            >
+              继续游戏
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex-1 flex overflow-hidden">
         <div className="w-64 bg-[#12121f] border-r border-red-900/30 p-4 overflow-y-auto">
           <div className="mb-4"><h3 className="text-xs text-gray-500 mb-2">难度</h3><div className={'text-sm font-bold ' + (gameState.difficulty === 'hard' ? 'text-red-500' : gameState.difficulty === 'normal' ? 'text-yellow-500' : 'text-green-500')}>{gameState.difficulty === 'easy' ? '🟢 简单' : gameState.difficulty === 'normal' ? '🟡 中等' : '🔴 困难'}</div></div>
@@ -714,7 +1183,24 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
               </div>
             );
           })}</div></div>
-          <div><h3 className="text-xs text-gray-500 mb-2">当前副本</h3><div className="text-sm text-gray-400">{gameState.currentDungeon}</div></div>
+          <div className="mb-4"><h3 className="text-xs text-gray-500 mb-2">当前副本</h3><div className="text-sm text-gray-400">{gameState.currentDungeon}</div></div>
+          {/* 手动通关按钮 */}
+          <button
+            onClick={() => {
+              const summary: DungeonSummary = {
+                name: gameState.currentDungeon,
+                outcome: '顺利通关',
+                keyEvents: [],
+                itemsGained: [],
+                teammatesInvolved: gameState.teammates.map(t => t.name),
+              };
+              setPendingSummary(summary);
+              setShowDungeonSelect(true);
+            }}
+            className="w-full py-2 bg-red-900/30 hover:bg-red-900/60 border border-red-500/30 text-red-400 hover:text-white text-sm rounded transition"
+          >
+            🏆 通关副本
+          </button>
         </div>
         <div className="flex-1 flex flex-col">
           <div className="flex-1 overflow-y-auto p-4 space-y-4 chat-scroll" style={{ flex: '1 1 auto', minHeight: 0 }}>
@@ -822,12 +1308,20 @@ function GamePage({ gameState, apiKey, apiType, onExit, onOpenSettings, onSave }
 export default function App() {
   const [phase, setPhase] = useState<'home' | 'create' | 'game'>('home');
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [apiKey, setApiKey] = useState('');
-  const [apiType, setApiType] = useState<ApiType>('deepseek');
+  // 直接从 localStorage 读取初始值
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('apiKey') || '');
+  const [apiType, setApiType] = useState<ApiType>(() => (localStorage.getItem('apiType') as ApiType) || 'deepseek');
 
+  // 监听 localStorage 变化（用于跨标签页同步）
   useEffect(() => {
-    setApiKey(localStorage.getItem('apiKey') || '');
-    setApiType((localStorage.getItem('apiType') as ApiType) || 'deepseek');
+    const handleStorageChange = () => {
+      const storedKey = localStorage.getItem('apiKey') || '';
+      const storedType = (localStorage.getItem('apiType') as ApiType) || 'deepseek';
+      setApiKey(storedKey);
+      setApiType(storedType);
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
   const handleSave = (state: GameState, messages: Message[]) => {
@@ -840,11 +1334,16 @@ export default function App() {
     setPhase('game');
   };
 
+  const handleApiSettingsChange = (key: string, type: string) => {
+    setApiKey(key);
+    setApiType(type as ApiType);
+  };
+
   return (
     <div className="min-h-screen bg-[#0a0a15]">
-      {phase === 'home' && <HomePage onStart={() => setPhase('create')} onContinue={handleContinue} />}
+      {phase === 'home' && <HomePage onStart={() => setPhase('create')} onContinue={handleContinue} onApiSettingsChange={handleApiSettingsChange} />}
       {phase === 'create' && <CharacterCreate onComplete={(s) => { setGameState(s); setPhase('game'); }} onBack={() => setPhase('home')} />}
-      {phase === 'game' && gameState && <GamePage gameState={gameState} apiKey={apiKey} apiType={apiType} onExit={() => setPhase('home')} onOpenSettings={() => {}} onSave={handleSave} />}
+      {phase === 'game' && gameState && <GamePage gameState={gameState} apiKey={apiKey} apiType={apiType} onExit={() => setPhase('home')} onOpenSettings={() => {}} onSave={handleSave} onApiKeyChange={setApiKey} />}
     </div>
   );
 }
