@@ -880,9 +880,20 @@ funny: 搞笑弹幕
     // 第3步：逐行扫描提取选项（最可靠）
     {
       const lines = raw.split('\n');
+      // 模式1：[A]: 内容 或 [A]. 内容（有冒号/句号等分隔符）
+      const reWithSep = /^\s*\[?([A-D])\]?\s*[:：\.、）\)]\s*(.+)$/i;
+      // 模式2：A. 内容 或 A、内容（无方括号，有标点分隔）
+      const reOnlyDot = /^\s*([A-D])\s*[\.、．]\s*(.+)$/i;
+      // 模式3：A 内容（无任何标点，首字符为选项字母开头）
+      const rePlain = /^\s*([A-D])[\s]+(.+)$/i;
+      // 模式4：[A] 内容（带方括号，无标点）
+      const reBracketPlain = /^\s*\[([A-D])\]\s*(.+)$/i;
+
       for (const line of lines) {
-        // 匹配各种格式：[A]: / [A] / A: / A. / A、/ A） 等
-        const mm = line.match(/^\s*\[?([A-D])\]?\s*[:：\.、）\)]\s*(.+)$/i);
+        let mm = line.match(reWithSep);
+        if (!mm) mm = line.match(reOnlyDot);
+        if (!mm) mm = line.match(reBracketPlain);
+        if (!mm) mm = line.match(rePlain);
         if (mm) {
           const label = mm[1].toUpperCase();
           const text = mm[2].trim();
@@ -890,12 +901,15 @@ funny: 搞笑弹幕
           if (text && !options.find(o => o.label === label)) {
             options.push({ label, text });
           }
+        } else if (line.match(/^\s*\[?[A-D]\]/i)) {
+          // 记录疑似选项行但未匹配的（方便调试）
+          console.log('[DEBUG] 未匹配选项行:', line.trim().substring(0, 80));
         }
       }
     }
     // 如果选项超过4个，只保留前4个
     if (options.length > 4) options.length = 4;
-    // 如果不足4个，自动补全缺失的选项
+    // 如果不足4个，打印详细信息后兜底
     const allLabels = ['A', 'B', 'C', 'D'];
     for (const label of allLabels) {
       if (!options.find(o => o.label === label)) {
@@ -910,7 +924,7 @@ funny: 搞笑弹幕
       options.push({ label, text: '继续前进' });
     }
 
-    console.log('[DEBUG] 纯净剧情长度:', cleanStory.length, '选项:', options.map(o => o.label));
+    console.log('[DEBUG] 纯净剧情长度:', cleanStory.length, '提取到的选项:', JSON.stringify(options));
   }
 
   return (
